@@ -157,7 +157,7 @@ type Bucket struct {
 }
 
 // NewBucket returns a new Bucket using the provided Azure config.
-func NewBucket(logger log.Logger, azureConfig []byte, component string, wrapRoundtripper func(http.RoundTripper) http.RoundTripper) (*Bucket, error) {
+func NewBucket(logger log.Logger, azureConfig []byte, component string, wrapRoundtripper func(http.RoundTripper) http.RoundTripper) (objstore.Bucket, error) {
 	level.Debug(logger).Log("msg", "creating new Azure bucket connection", "component", component)
 	conf, err := parseConfig(azureConfig)
 	if err != nil {
@@ -170,7 +170,7 @@ func NewBucket(logger log.Logger, azureConfig []byte, component string, wrapRoun
 }
 
 // NewBucketWithConfig returns a new Bucket using the provided Azure config struct.
-func NewBucketWithConfig(logger log.Logger, conf Config, component string, wrapRoundtripper func(http.RoundTripper) http.RoundTripper) (*Bucket, error) {
+func NewBucketWithConfig(logger log.Logger, conf Config, component string, wrapRoundtripper func(http.RoundTripper) http.RoundTripper) (objstore.Bucket, error) {
 	if err := conf.validate(); err != nil {
 		return nil, err
 	}
@@ -180,9 +180,19 @@ func NewBucketWithConfig(logger log.Logger, conf Config, component string, wrapR
 		return nil, err
 	}
 
+	ctx := context.Background()
+	accountInfo, err := containerClient.GetAccountInfo(ctx, nil)
+	if err != nil {
+		return nil, errors.Wrap(err, "unable to get Azure storage account info")
+	}
+
+	if accountInfo.IsHierarchicalNamespaceEnabled != nil && *accountInfo.IsHierarchicalNamespaceEnabled {
+		level.Debug(logger).Log("msg", "using azure data lake gen 2 storage")
+		return NewDataLakeGen2Bucket(logger, conf, component, wrapRoundtripper)
+	}
+
 	// Check if storage account container already exists, and create one if it does not.
 	if conf.StorageCreateContainer {
-		ctx := context.Background()
 		_, err = containerClient.GetProperties(ctx, &container.GetPropertiesOptions{})
 		if err != nil {
 			if !bloberror.HasCode(err, bloberror.ContainerNotFound) {
@@ -418,7 +428,7 @@ func NewTestBucket(t testing.TB, component string) (objstore.Bucket, func(), err
 	ctx := context.Background()
 	return bkt, func() {
 		objstore.EmptyBucket(t, ctx, bkt)
-		_, err := bkt.containerClient.Delete(ctx, &container.DeleteOptions{})
+		_, err := bkt.(*Bucket).containerClient.Delete(ctx, &container.DeleteOptions{})
 		if err != nil {
 			t.Logf("deleting bucket failed: %s", err)
 		}
