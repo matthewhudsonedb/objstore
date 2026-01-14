@@ -1,7 +1,4 @@
-// Copyright (c) The Thanos Authors.
-// Licensed under the Apache License 2.0.
-
-package azure
+package azure_data_lake
 
 import (
 	"fmt"
@@ -11,15 +8,15 @@ import (
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore/policy"
 	"github.com/Azure/azure-sdk-for-go/sdk/azidentity"
-	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob/container"
-
+	"github.com/Azure/azure-sdk-for-go/sdk/storage/azdatalake"
+	azfilesystem "github.com/Azure/azure-sdk-for-go/sdk/storage/azdatalake/filesystem"
 	"github.com/thanos-io/objstore/exthttp"
 )
 
 // DirDelim is the delimiter used to model a directory structure in an object store bucket.
 const DirDelim = "/"
 
-func getContainerClient(conf Config, wrapRoundtripper func(http.RoundTripper) http.RoundTripper) (*container.Client, error) {
+func getDataLakeGen2FilesystemClient(conf Config, wrapRoundtripper func(http.RoundTripper) http.RoundTripper) (*azfilesystem.Client, error) {
 	var rt http.RoundTripper
 	rt, err := exthttp.DefaultTransport(conf.HTTPConfig)
 	if err != nil {
@@ -31,7 +28,8 @@ func getContainerClient(conf Config, wrapRoundtripper func(http.RoundTripper) ht
 	if wrapRoundtripper != nil {
 		rt = wrapRoundtripper(rt)
 	}
-	opt := &container.ClientOptions{
+
+	opt := &azfilesystem.ClientOptions{
 		ClientOptions: azcore.ClientOptions{
 			Retry: policy.RetryOptions{
 				MaxRetries:    conf.PipelineConfig.MaxTries,
@@ -46,43 +44,27 @@ func getContainerClient(conf Config, wrapRoundtripper func(http.RoundTripper) ht
 		},
 	}
 
-	// Use connection string if set
+	fileSystemURL := fmt.Sprintf("https://%s.dfs.core.windows.net/%s", conf.StorageAccountName, conf.ContainerName)
+
 	if conf.StorageConnectionString != "" {
-		containerClient, err := container.NewClientFromConnectionString(conf.StorageConnectionString, conf.ContainerName, opt)
-		if err != nil {
-			return nil, err
-		}
-		return containerClient, nil
+		return azfilesystem.NewClientFromConnectionString(conf.StorageConnectionString, conf.ContainerName, opt)
 	}
 
-	containerURL := fmt.Sprintf("https://%s.%s/%s", conf.StorageAccountName, conf.Endpoint, conf.ContainerName)
-
-	// Use shared keys if set
 	if conf.StorageAccountKey != "" {
-		cred, err := container.NewSharedKeyCredential(conf.StorageAccountName, conf.StorageAccountKey)
+		creds, err := azdatalake.NewSharedKeyCredential(conf.StorageAccountName, conf.StorageAccountKey)
 		if err != nil {
 			return nil, err
 		}
-		containerClient, err := container.NewClientWithSharedKeyCredential(containerURL, cred, opt)
-		if err != nil {
-			return nil, err
-		}
-		return containerClient, nil
+
+		return azfilesystem.NewClientWithSharedKeyCredential(fileSystemURL, creds, opt)
 	}
 
-	// Otherwise use a token credential
 	cred, err := getTokenCredential(conf)
-
 	if err != nil {
 		return nil, err
 	}
 
-	containerClient, err := container.NewClient(containerURL, cred, opt)
-	if err != nil {
-		return nil, err
-	}
-
-	return containerClient, nil
+	return azfilesystem.NewClient(fileSystemURL, cred, opt)
 }
 
 func getTokenCredential(conf Config) (azcore.TokenCredential, error) {

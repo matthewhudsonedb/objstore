@@ -1,4 +1,4 @@
-package azure
+package azure_data_lake
 
 import (
 	"context"
@@ -15,9 +15,58 @@ import (
 	"github.com/go-kit/log"
 	"github.com/go-kit/log/level"
 	"github.com/pkg/errors"
+	"github.com/prometheus/common/model"
 	"github.com/thanos-io/objstore"
-	"gopkg.in/yaml.v2"
+	"github.com/thanos-io/objstore/exthttp"
 )
+
+// DefaultConfig for Azure Data Lake Gen2 client.
+var DefaultConfig = Config{
+	Endpoint:               "dfs.core.windows.net",
+	StorageCreateContainer: true,
+	HTTPConfig: exthttp.HTTPConfig{
+		IdleConnTimeout:       model.Duration(90 * time.Second),
+		ResponseHeaderTimeout: model.Duration(2 * time.Minute),
+		TLSHandshakeTimeout:   model.Duration(10 * time.Second),
+		ExpectContinueTimeout: model.Duration(1 * time.Second),
+		MaxIdleConns:          100,
+		MaxIdleConnsPerHost:   100,
+		MaxConnsPerHost:       0,
+		DisableCompression:    false,
+	},
+}
+
+// Config Azure storage configuration.
+type Config struct {
+	AzTenantID              string             `yaml:"az_tenant_id"`
+	ClientID                string             `yaml:"client_id"`
+	ClientSecret            string             `yaml:"client_secret"`
+	StorageAccountName      string             `yaml:"storage_account"`
+	StorageAccountKey       string             `yaml:"storage_account_key"`
+	StorageConnectionString string             `yaml:"storage_connection_string"`
+	StorageCreateContainer  bool               `yaml:"storage_create_container"`
+	ContainerName           string             `yaml:"container"`
+	Endpoint                string             `yaml:"endpoint"`
+	UserAssignedID          string             `yaml:"user_assigned_id"`
+	MaxRetries              int                `yaml:"max_retries"`
+	ReaderConfig            ReaderConfig       `yaml:"reader_config"`
+	PipelineConfig          PipelineConfig     `yaml:"pipeline_config"`
+	HTTPConfig              exthttp.HTTPConfig `yaml:"http_config"`
+
+	// Deprecated: Is automatically set by the Azure SDK.
+	MSIResource string `yaml:"msi_resource"`
+}
+
+type ReaderConfig struct {
+	MaxRetryRequests int `yaml:"max_retry_requests"`
+}
+
+type PipelineConfig struct {
+	MaxTries      int32          `yaml:"max_tries"`
+	TryTimeout    model.Duration `yaml:"try_timeout"`
+	RetryDelay    model.Duration `yaml:"retry_delay"`
+	MaxRetryDelay model.Duration `yaml:"max_retry_delay"`
+}
 
 type DataLakeGen2Bucket struct {
 	logger           log.Logger
@@ -318,11 +367,7 @@ func NewTestDataLakeGen2Bucket(t testing.TB, component string) (objstore.Bucket,
 	conf.StorageAccountKey = os.Getenv("AZURE_STORAGE_ACCESS_KEY")
 	conf.ContainerName = objstore.CreateTemporaryTestBucketName(t)
 
-	bc, err := yaml.Marshal(conf)
-	if err != nil {
-		return nil, nil, err
-	}
-	bkt, err := NewBucket(log.NewNopLogger(), bc, component, nil)
+	bkt, err := NewDataLakeGen2Bucket(log.NewNopLogger(), *conf, component, nil)
 	if err != nil {
 		t.Errorf("Cannot create Azure storage container:")
 		return nil, nil, err
@@ -330,7 +375,7 @@ func NewTestDataLakeGen2Bucket(t testing.TB, component string) (objstore.Bucket,
 	ctx := context.Background()
 	return bkt, func() {
 		objstore.EmptyBucket(t, ctx, bkt)
-		_, err := bkt.(*DataLakeGen2Bucket).filesystemClient.Delete(ctx, nil)
+		_, err := bkt.filesystemClient.Delete(ctx, nil)
 		if err != nil {
 			t.Logf("deleting bucket failed: %s", err)
 		}
